@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "fitness_plus",
+            "request": "launch",
+            "type": "dart",
+            "cwd": "fitness_plus",
+            "program": "lib/main.dart",
+            "toolArgs": [
+                "--dart-define-from-file",
+                "config/supabase.dev.json"
+            ]
+        }
+    ]
+}

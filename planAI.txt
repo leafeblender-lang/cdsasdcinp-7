@@ -1,0 +1,1289 @@
+================================================================================
+PLAN AI: PREPOZNAVANJE SPRAVE SA SLIKE -> VEZBE I TUTORIJAL
+FitnesApp / fitness_plus
+Napisano: 2026-08-30
+================================================================================
+
+KRATAK ODGOVOR NA TVOJE PITANJE
+--------------------------------------------------------------------------------
+DA, izvodljivo je i DA, moze potpuno bez placenih APIja.
+
+Kljuc je da model radi NA TELEFONU (on-device inference), a ne na serveru.
+Kad model jednom postoji kao .tflite fajl u aplikaciji, svako prepoznavanje je
+besplatno - nema poziva ka serveru, nema cene po korisniku, radi i offline.
+To se savrseno uklapa u ogranicenje projekta da cena po korisniku mora ostati
+blizu nule.
+
+Trening modela je takodje besplatan: Google Colab daje besplatan GPU (T4), a
+sve biblioteke su open source.
+
+JEDINI STVARNI TROSAK JE TVOJE VREME ZA PRIKUPLJANJE SLIKA.
+Realno: 15-25 sati fotografisanja/snimanja po teretani-turi + 20-35 sati
+tehnickog rada. Sve ostalo je 0 dinara.
+
+VAZNO ODMAH NA POCETKU: kvalitet ovog feature-a ne odredjuje izbor modela nego
+kvalitet dataseta. Razlika izmedju MobileNetV3 i EfficientNet je 2-3% tacnosti.
+Razlika izmedju "slikao sam sve u jednoj teretani" i "slikao sam u 8 teretana"
+je 30-40% tacnosti. Zato je najveci deo ovog dokumenta o slikama, ne o modelu.
+
+
+================================================================================
+SADRZAJ
+================================================================================
+ 1. Kako ceo sistem radi (arhitektura)
+ 2. Realno stanje tvoje aplikacije danas + sta je preduslov
+ 3. Izbor pristupa (4 opcije, sa preporukom)
+ 4. Spisak klasa (koje sprave prepoznajemo)
+ 5. DATASET - koliko slika, koji uglovi, koja rezolucija, mutno ili ne
+ 6. Tehnologije i alati (tacne verzije i paketi)
+ 7. Priprema podataka - skripte korak po korak
+ 8. Trening modela - ceo Colab postupak sa kodom
+ 9. Evaluacija - sta znaci "dovoljno dobro"
+10. Kvantizacija, velicina modela, brzina
+11. Integracija u Flutter aplikaciju (sa AGP 9 zamkom)
+12. Mapiranje sprava na vezbe u bazi (SQL)
+13. Petlja poboljsanja (active learning) i njen trosak
+14. Vremenski plan po nedeljama
+15. Rizici i kako ih resavas
+16. Brza MVP varijanta ako hoces rezultat za 3 dana
+17. Checklist za prvih 7 dana
+
+
+================================================================================
+1. KAKO CEO SISTEM RADI (ARHITEKTURA)
+================================================================================
+
+Korisnik uslika spravu -> aplikacija za ~50ms kaze "ovo je Lat Pulldown, 91%"
+-> otvara se ekran sa vezbama za tu spravu + tutorijalima.
+
+Sistem ima 3 sloja, i preporuka je da sva tri postoje jer se medjusobno
+pokrivaju:
+
+  SLOJ A - KLASIFIKATOR SLIKE (glavni)
+    Neuronska mreza (MobileNetV3) obucena na tvojim slikama.
+    Ulaz: slika 224x224. Izlaz: verovatnoca za svaku od ~20 klasa sprava.
+    Radi uvek, i kad na spravi nema nikakvog natpisa.
+
+  SLOJ B - OCR NATPISA/PLOCICE (pomocni, jako jeftin dobitak)
+    Skoro svaka komercijalna sprava ima plocicu sa uputstvom na kojoj pise ime
+    vezbe ("LEG EXTENSION", "LAT PULLDOWN") ili bar brend (Technogym, Matrix,
+    Life Fitness, Gym80, Hammer Strength).
+    Cita se on-device OCR-om (ML Kit na Androidu, Vision framework na iOS-u) -
+    besplatno, offline, bez treninga.
+    Ako OCR nadje tekst koji fuzzy-matchuje ime klase, pouzdanost skace na
+    prakticno 100%. Ovo resava i najteze zabune iz sloja A.
+    Realno pokriva 30-50% slucajeva (plocica postoji, ali nije uvek u kadru).
+
+  SLOJ C - POTVRDA KORISNIKA (UX + besplatni podaci)
+    Ne prikazuj jedan odgovor kao apsolutnu istinu. Prikazi najbolji pogodak
+    veliko, a ispod dve alternative kao male chip dugmice ("Nije? -> Seated Row
+    / Chest Press / Izaberi rucno").
+    Time: (1) korisnik nikad nije zaglavljen kad model pogresi, (2) svaki
+    korisnikov ispravak je BESPLATNA labela za sledeci trening modela.
+
+  KOMBINOVANJE:
+    finalni_skor(klasa) = softmax_klasifikatora(klasa)
+                        + 0.45 ako OCR nadje ime te klase
+                        + 0.10 ako OCR nadje brend koji ta klasa cesto ima
+    Ako je najbolji skor < 0.55 ili je razlika prvog i drugog < 0.12,
+    ne tvrdi nista - prikazi "Izgleda kao jedno od ovoga:" sa top 3.
+
+TOK PODATAKA (sve lokalno osim poslednjeg koraka):
+    kamera/galerija
+      -> EXIF rotacija
+      -> centralni kvadratni crop
+      -> resize 224x224
+      -> normalizacija (PAZI: zavisi od modela, vidi sekciju 8.6)
+      -> TFLite interpreter
+      -> softmax (20 brojeva)
+      -> prag + OCR bonus
+      -> class_ref_id (npr. "lat_pulldown")
+      -> upit u Supabase / lokalni Drift kes -> lista vezbi + tutorijali
+
+
+================================================================================
+2. REALNO STANJE TVOJE APLIKACIJE DANAS + STA JE PREDUSLOV
+================================================================================
+
+Proverio sam kod i bazu pre pisanja ovog plana. Stanje:
+
+  - lib/features/exercises/ postoji, katalog se cita preko RPC-a iz Supabase.
+  - public.exercises ima kolonu `equipment` ali je to GRUB niz:
+    no_equipment, dumbbells, barbell, cable, machine, bars, bands, ball,
+    kettlebell (enum TrainingEquipment u
+    lib/features/exercises/domain/exercise_filter.dart).
+    Dakle baza zna samo "ovo je masina", ne zna KOJA masina.
+  - U katalogu trenutno ima UKUPNO 48 vezbi, od toga:
+        5 sa equipment = 'machine'
+        7 sa equipment = 'cable'
+    Konkretno: incline_smith_machine_chest_press, machine_bench_press,
+    machine_curl, smith_machine_bench_press, triceps_dip_machine,
+    bayesian_curl, cable_overhead_triceps_extension, flat_cable_fly,
+    high_to_low_crossover, rope_triceps_pushdown,
+    rotator_cuff_external_rotation, straight_bar_triceps_pressdown.
+  - Tutorijali: `exercises.instruction` + bundled fallback koji trenutno pokriva
+    samo push_ups (lib/features/exercises/domain/bundled_exercise_tutorials.dart).
+  - Video/thumbnail se serviraju iz Supabase Storage, verzionisani i kesirani
+    (lib/features/exercises/data/exercise_media_cache.dart).
+  - image_picker 1.2.3 vec postoji u pubspec.yaml -> kamera za v1 ne trazi novi
+    paket.
+
+=> PREDUSLOV KOJI SE NE SME PRESKOCITI:
+   Nema smisla praviti model koji prepoznaje 20 sprava ako 15 od njih nema
+   nijednu vezbu u katalogu. Korisnik uslika Leg Press, model tacno pogodi, a
+   aplikacija otvori prazan ekran - to je gore nego da feature ne postoji.
+
+   Za svaku spravu koju stavljas u model treba MINIMUM 3-5 vezbi u katalogu,
+   svaka sa `instruction` tekstom i po mogucstvu preview klipom.
+   20 sprava x 4 vezbe = ~80 novih vezbi u katalogu.
+
+   PRAVILO: sirina modela nikad ne sme preteci sirinu kataloga.
+   Zato v1 kreni sa 10-12 sprava za koje si popunio katalog, pa siri.
+
+   Ovaj posao (pisanje vezbi i tutorijala) je zaseban od AI dela i moze da ide
+   paralelno dok ti skupljas slike.
+
+
+================================================================================
+3. IZBOR PRISTUPA (4 OPCIJE)
+================================================================================
+
+OPCIJA 1: Cloud API (GPT-4o Vision, Gemini, Claude vision, AWS Rekognition)
+  Tacnost: odlicna odmah, bez treninga.
+  Trosak: ~0.001-0.01 USD po slici. Na 10.000 korisnika x 5 skenova mesecno =
+          50.000 poziva = 50-500 USD MESECNO.
+  Radi offline: NE.
+  VERDIKT: odbaceno. Direktno krsi ogranicenje "cena po korisniku ~0".
+  (Moze eventualno kao skriveni "teski slucaj" fallback, ali ni to ne
+   preporucujem - jedan viralni dan te kosta vise nego ceo hosting.)
+
+OPCIJA 2: On-device klasifikacija (transfer learning, MobileNetV3 -> TFLite)
+  <== PREPORUKA
+  Tacnost: 85-93% top-1 realno, 95%+ top-3, uz dobar dataset.
+  Trosak rada: 0. Trening: 0 (Colab free).
+  Velicina: 3-6 MB u APK/IPA.
+  Brzina: 15-40 ms po slici na osrednjem Androidu.
+  Radi offline: DA.
+  Mana: dodavanje nove sprave trazi ponovni trening (ali to je 20 min u Colabu).
+
+OPCIJA 3: Embedding + kNN (bez treninga uopste)
+  Uzmes gotov MobileNetV3/EfficientNet bez poslednjeg sloja, on ti za svaku
+  sliku vraca vektor od 1024 broja. Za svaku spravu ubacis 10-20 referentnih
+  slika, izracunas njihove vektore i cuvas ih kao JSON u aplikaciji. Za novu
+  sliku racunas kosinusnu slicnost i uzimas najblizih k.
+  Tacnost: 65-80% (slabije, jer backbone nije ucen na tvom domenu).
+  Prednost: NULA treninga, nova sprava = dodas 15 slika u JSON i to je to.
+  VERDIKT: odlicno kao PROTOTIP (za 2-3 dana imas nesto sto radi) i kasnije kao
+  dodatak "dodaj spravu iz svoje teretane". Nije dovoljno dobro kao finalno.
+
+OPCIJA 4: Detekcija objekata (YOLO, bounding box)
+  Nalazi VISE sprava na jednoj slici i njihovu poziciju.
+  Mana: labeliranje je 5-10x sporije (moras rucno da crtas okvire oko svake
+  sprave na svakoj slici).
+  VERDIKT: preskoci za v1. Korisnik ionako uslika jednu spravu ispred sebe.
+  Razmisli o tome tek u v3 ako ikad budes hteo "uslikaj celu teretanu i reci mi
+  sta sve imas".
+
+FINALNA PREPORUKA:
+  Faza 0 (opciono, 2 dana): Opcija 3 kao prototip da vidis kako se ponasa.
+  Faza 1 (glavno): Opcija 2, klasifikator + OCR sloj.
+  Faza 3 (kasnije): Opcija 3 kao dopuna za "moja teretana ima spravu koju ne
+  prepoznajes".
+
+
+================================================================================
+4. SPISAK KLASA (KOJE SPRAVE PREPOZNAJEMO)
+================================================================================
+
+PRAVILA ZA IZBOR KLASA:
+  - Klasa mora biti VIZUELNO razlicita. Ako ti sam sa slike ne razlikujes dve
+    sprave, ni model nece. Spoji ih u jednu klasu.
+  - Klasa mora imati vezbe u katalogu (vidi sekciju 2).
+  - Bolje 12 klasa sa 95% tacnosti nego 35 klasa sa 60%.
+  - UVEK dodaj klasu `unknown` (vidi 5.7). Bez nje model MORA da svaku sliku
+    zida, cvrsti pod i tudju torbu svrsta u neku spravu.
+
+PREDLOG v1 - 12 klasa (najcesce sprave, dobro vizuelno razdvojene):
+   1. lat_pulldown              (lat masina, sedis, povlacis odozgo)
+   2. seated_cable_row          (donja katusa, veslanje sedeci)
+   3. cable_crossover           (dupla katusa / functional trainer)
+   4. chest_press_machine       (potisak za grudi, sedeci)
+   5. shoulder_press_machine    (potisak za ramena)
+   6. pec_deck                  (butterfly / leptir)
+   7. leg_press                 (kosi potisak nogama, 45 stepeni)
+   8. leg_extension             (opruzanje potkolenica)
+   9. leg_curl                  (pregib potkolenica - sedeci I lezeci ZAJEDNO)
+  10. smith_machine             (vodjena sipka u sinama)
+  11. treadmill                 (traka za trcanje)
+  12. unknown                   (sve ostalo)
+
+PROSIRENJE v2 - jos 10 klasa:
+  13. hack_squat
+  14. power_rack / squat_rack
+  15. assisted_pullup_dip       (masina sa protivtegom)
+  16. chest_supported_row       (t-bar / row masina sa naslonom)
+  17. hip_thrust_machine
+  18. hip_abduction_adduction   (obe u jednoj klasi - ista sprava, drugi smer)
+  19. calf_raise_machine
+  20. ab_crunch_machine
+  21. back_extension            (rimska stolica / hyperextension)
+  22. preacher_curl_machine
+
+PROSIRENJE v3 - kardio i slobodni tegovi:
+  23. stationary_bike           (podeli na upright/recumbent tek ako treba)
+  24. elliptical
+  25. rowing_erg
+  26. stairmaster
+  27. dumbbell_rack
+  28. adjustable_bench
+  29. barbell_plate_rack
+
+PARovi KOJE MODEL NAJCESCE MESA (i sta da radis):
+  leg_extension  <-> leg_curl(seated)   Skoro identican ram, razlika je samo
+                                        gde je jastuce (iznad ili ispod
+                                        potkolenice). RESENJE: obavezno slikaj
+                                        iz bocnog ugla gde se jastuce vidi;
+                                        min 40% slika ove dve klase iz profila.
+  lat_pulldown   <-> seated_cable_row   Razlika: smer kabla (gore/dole).
+                                        RESENJE: siri kadar koji uhvati gornju
+                                        katarinu ili stopala.
+  chest_press    <-> shoulder_press     Razlika: ugao naslona i visina rucki.
+  smith_machine  <-> power_rack         Razlika: sine i fiksna sipka.
+                                        RESENJE: slikaj tako da se vide sine.
+  cable_crossover<-> functional_trainer Spoji ih u jednu klasu, ionako se iste
+                                        vezbe rade.
+
+Klase pisi kao snake_case ref_id string, isto kao sto vec radis sa
+exercises.ref_id. Imena klasa = imena foldera u datasetu.
+
+
+================================================================================
+5. DATASET - NAJVAZNIJI DEO CELOG PLANA
+================================================================================
+Ovde se dobija ili gubi ceo feature. Citaj pazljivo.
+
+--------------------------------------------------------------------------------
+5.1 KOLIKO SLIKA PO JEDNOJ SPRAVI?
+--------------------------------------------------------------------------------
+
+  NIVO           SLIKA/KLASA   RAZLICITIH PRIMERAKA   OCEKIVANA TACNOST
+                               (brend/model/boja)     (na NOVOJ teretani)
+  ------------------------------------------------------------------------
+  Prototip           80-120          2-3 primerka       55-70%
+  MVP (v1)          250-400          6-10 primeraka     82-90%
+  Solidno           500-700         12-20 primeraka     90-94%
+  Produkcija       800-1200         25+ primeraka       93-96%
+
+  PREPORUKA ZA START: 300 slika po klasi, 12 klasa = 3.600 slika + 800 za
+  `unknown` = ~4.400 slika ukupno.
+  To zvuci puno dok ne procitas 5.3 (video trik) - onda je to jedno popodne po
+  teretani.
+
+  NAJVAZNIJE PRAVILO CELE SEKCIJE:
+  BROJ RAZLICITIH PRIMERAKA SPRAVE JE VAZNIJI OD BROJA SLIKA.
+  300 slika iste crne Technogym lat masine je manje vredno od 120 slika sest
+  razlicitih lat masina (crna, siva, crvena, plava, stara bez oplate, nova).
+  Ako imas samo jednu teretanu, model nauci "crna sprava kraj ogledala" umesto
+  "lat masina" i pasce na 40% cim ga neko upotrebi u drugoj teretani.
+
+  MINIMUM RAZLICITIH TERETANA: 5. Idealno 8-10.
+  Ako nemas pristup - trazi od prijatelja da snime video po uputstvu iz 5.3.
+  Jedan prijatelj + 10 minuta = cela nova teretana u datasetu.
+
+--------------------------------------------------------------------------------
+5.2 BALANS KLASA
+--------------------------------------------------------------------------------
+  Nemoj 800 slika lat masine i 90 slika hack squata. Odnos najvece i najmanje
+  klase drzi ispod 3:1.
+  Ako neka klasa zaostaje, ili je dopuni, ili je izbaci iz v1.
+  U treningu svejedno koristi class_weight='balanced' (kod je u sekciji 8).
+
+--------------------------------------------------------------------------------
+5.3 KAKO PRIKUPITI 300 SLIKA ZA MINUT (VIDEO TRIK)
+--------------------------------------------------------------------------------
+  NEMOJ da klikces 300 puta na okidac. Umesto toga:
+
+  1. Ukljuci video, 1080p, 30fps (NE 4K - fajlovi ogromni, dobitka nema).
+  2. Polako obidji spravu u krugu, 30-45 sekundi, kao da je snimas za oglas.
+     Dok hodas, menjaj visinu telefona: pocni u visini kolena, podigni na
+     grudi, pa iznad glave, pa opet dole.
+  3. Poslednjih 10 sekundi: pridji blizu i snimi detalje - jastuce, rucke,
+     plocicu sa uputstvom, stack tegova, logo brenda.
+  4. Iz tog jednog videa skripta izvlaci 60-90 upotrebljivih frejmova
+     (2 fps + uklanjanje duplikata).
+
+  MATEMATIKA: 12 sprava x 45 sekundi = 9 minuta snimanja po teretani.
+  6 teretana = ~1 sat snimanja = 4.000-6.000 slika. To je ceo dataset.
+
+  DOPUNA RUCNIM SLIKAMA (obavezno, ~20% dataseta):
+  Video frejmovi su svi iz iste sesije, istog osvetljenja, iste rezolucije.
+  Zato dodatno uslikaj 15-20 pravih fotografija po spravi, u razlicitim
+  danima/satima (jutro, vece pod vestackim svetlom, kad je guzva).
+
+  PRAVILO SNIMANJA: uvek zapisi IZ KOJE TERETANE je snimak. To ti treba za
+  ispravnu podelu na train/val/test (vidi 5.9). Imenuj fajl odmah:
+      gym03_lat_pulldown_02.mp4
+
+  PRISTOJNOST I ZAKON: pitaj osoblje teretane za dozvolu pre snimanja. Izbegavaj
+  lica u kadru. Ako lice ipak udje, zamuti ga ili obrisi sliku. Ovo su tudji
+  ljudi u polugolom stanju - to je najosetljivija kategorija licnih podataka.
+
+--------------------------------------------------------------------------------
+5.4 KOJI UGLOVI - TACNA SPECIFIKACIJA
+--------------------------------------------------------------------------------
+  Zamisli sat oko sprave, gde je 12h ispred sprave (mesto gde korisnik stane).
+
+  AZIMUT (obavezno svih 5, po ~15-20% dataseta svaki):
+     0 stepeni   - frontalno, kako je korisnik vidi kad joj prilazi
+    45 stepeni   - tri cetvrtine levo   <== NAJVREDNIJI UGAO, daj mu najvise
+    90 stepeni   - cist profil (bok)        slika, jer se vidi i dubina i front
+   135 stepeni   - tri cetvrtine desno
+   180 stepeni   - pozadi (vidi se stack tegova, ram)
+
+  VISINA KAMERE (svaka po ~33%):
+    nisko   ~0.6 m (visina kolena, telefon nagnut gore)
+    srednje ~1.5 m (prirodno, kako covek drzi telefon)   <== najvise slika
+    visoko  ~2.0 m (ruka podignuta, telefon nagnut dole)
+
+  UDALJENOST / KADAR (procenat dataseta):
+    40%  cela sprava + malo okoline (2-4 m) - ovo korisnik najcesce slika
+    35%  sprava popunjava kadar (1.5-2.5 m)
+    25%  detalj (0.5-1 m): jastuce, rucke, plocica sa uputstvom, sine, stack
+         Detalji su ono sto razdvaja leg extension od leg curl.
+
+  ORIJENTACIJA TELEFONA:
+    60% portret (tako ljudi slikaju), 40% pejzaz.
+
+  STANJA SPRAVE (varijacije koje MORAS pokriti):
+    - sa tegom postavljenim / bez tega
+    - sedište/naslon u razlicitim pozicijama
+    - razliciti attachmenti na katusi (uze, sipka, V-drska, ruckica)
+    - 20-30% slika SA COVEKOM na spravi ili pored nje
+      (jako vazno - u pravoj teretani je uvek neko u kadru)
+    - sa peskirom/flasom/torbom na spravi (realno, i uci model da ignorise)
+    - sprava delimicno zaklonjena drugom spravom
+
+  DIJAGRAM (pogled odozgo):
+
+                         180 (pozadi)
+                    \        |        /
+                     \       |       /
+             135  ----   [SPRAVA]   ----  45
+                     /       |       \
+                    /        |        \
+                  90       0 (front)       90
+                (levi bok)              (desni bok)
+
+--------------------------------------------------------------------------------
+5.5 KOJA REZOLUCIJA
+--------------------------------------------------------------------------------
+  SNIMANJE:      1080p video ili default foto telefona (12 MP). Ne trebas vise.
+                 4K ti samo puni disk, model svejedno gleda 224x224.
+  CUVANJE (raw): skaliraj duzu ivicu na 1024 px, JPEG kvalitet 88.
+                 ~150-250 KB po slici. 5.000 slika = ~1 GB. Stane na besplatni
+                 Google Drive.
+                 Zasto 1024 a ne 224 odmah: ako sutra predjes na model sa
+                 ulazom 384 px (bolja tacnost), ne moras ponovo da skupljas.
+  TRENING:       224x224 px (MobileNetV3, EfficientNet-Lite0).
+                 Pripremi drugu kopiju dataseta skaliranu na 256 px kratku
+                 ivicu (~40 KB po slici) - Colab ucitava 5x brze.
+  NIKAD:         ne uvecavaj male slike. Ako je original manji od 480 px duze
+                 ivice, baci ga. Upscale ne dodaje informaciju, samo uci model
+                 na artefakte.
+
+--------------------------------------------------------------------------------
+5.6 MUTNE ILI KRISTALNO CISTE SLIKE? (tvoje eksplicitno pitanje)
+--------------------------------------------------------------------------------
+  ODGOVOR: OBAVEZNO MESANO. Iskljucivo ostre slike su GRESKA.
+
+  Razlog: model uci distribuciju koju mu das. Ako mu das samo studijski ostre
+  slike, on nauci da prepoznaje ostre slike. A tvoj korisnik u teretani slika
+  iz ruke, u pokretu, pod zutim vestackim svetlom, cesto pod uglom, sa
+  odsjajem na hromu. To je potpuno druga distribucija i tacnost pada 20-30%.
+  Ovo se zove domain gap i to je najcesci razlog zasto model "radi u Colabu a
+  ne radi u aplikaciji".
+
+  CILJANI SASTAV DATASETA:
+    65-70%  ostre, dobro osvetljene              <- osnova
+    10-15%  blagi motion blur (slikano iz hoda, drhtava ruka)
+     5-10%  lose svetlo: mrak, backlight (prozor iza sprave), zuto svetlo,
+            odsjaj/refleksija na hromiranim delovima, senke
+     5-10%  delimicno zaklonjeno (covek, druga sprava, peskir) ili odsecen
+            deo sprave kadrom
+     0%     potpuno neupotrebljivo
+
+  ZLATNO PRAVILO ZA BRISANJE:
+  Ako TI, koji si spravu snimao, ne mozes da je prepoznas gledajuci samo tu
+  sliku - obrisi je. Takva slika ne uci model nista, samo unosi sum u gradijente.
+
+  VAZNA NAPOMENA: nemoj da se oslonis na to da ces mutnocu dodati vestacki
+  (Gaussian blur augmentacija). Sinteticki blur ne lici na pravi motion blur +
+  rolling shutter + sum senzora pri malo svetla. Vestacka augmentacija je
+  DODATAK pravim teskim slikama, ne zamena.
+
+--------------------------------------------------------------------------------
+5.7 KLASA `unknown` - NE PRESKACI JE
+--------------------------------------------------------------------------------
+  Softmax uvek sabira na 1. Bez `unknown` klase, slika tvoje macke dobija
+  "87% leg press" jer model MORA da bira izmedju ponudjenih klasa.
+
+  U `unknown` ide 600-1000 slika:
+    - podovi, zidovi, ogledala, plafon teretane
+    - ljudi bez sprave, garderoba, svlacionica, recepcija
+    - slobodni tegovi: bucice, sipke, tanjiri, kettlebell, stalci
+    - prostirke, lopte, gume, konopci, TRX
+    - ulica, kola, hrana, telefon, ekran, nasumicne kucne stvari (~150 komada)
+    - sprave koje NAMERNO nisu u tvojoj listi klasa (ako u v1 nemas hack squat,
+      njegove slike idu u unknown!)
+
+  Pored toga koristi i prag pouzdanosti:
+    prihvati odgovor samo ako je max(softmax) >= 0.55
+    I ako je (prvi - drugi) >= 0.12
+    inace prikazi top 3 i pusti korisnika da bira.
+
+--------------------------------------------------------------------------------
+5.8 STRUKTURA FOLDERA I IMENOVANJE
+--------------------------------------------------------------------------------
+  Klasifikacija ne trazi nikakvo rucno labeliranje - folder JE labela.
+  Nema crtanja okvira, nema alata za anotaciju. To je najveca prednost ovog
+  pristupa nad YOLO detekcijom.
+
+  dataset/
+    raw_video/
+      gym01/  lat_pulldown_01.mp4  leg_press_01.mp4  ...
+      gym02/  ...
+    raw/                          <- izvuceni frejmovi + rucne fotke, 1024 px
+      lat_pulldown/
+        gym01_s01_000123.jpg
+        gym01_s01_000147.jpg
+        gym04_manual_0007.jpg
+      leg_press/
+      unknown/
+    work/                         <- generise skripta, ne diraj rucno
+      train/  <klase>/
+      val/    <klase>/
+      test/   <klase>/
+
+  IME FAJLA MORA DA SADRZI OZNAKU TERETANE (gymNN) I SESIJE (sNN).
+  Bez toga ne mozes ispravno da podelis dataset (sledeca tacka) i dobices
+  laznu tacnost od 98% koja u aplikaciji bude 60%.
+
+--------------------------------------------------------------------------------
+5.9 PODELA NA TRAIN/VAL/TEST - NAJCESCA GRESKA POCETNIKA
+--------------------------------------------------------------------------------
+  POGRESNO: nasumicno 80/10/10 po slikama.
+  Zasto: frejmovi 000123 i 000124 iz istog videa su prakticno ista slika. Ako
+  jedan zavrsi u treningu a drugi u testu, model je "video" test skup. Dobices
+  97% na testu i razocaranje na terenu. To se zove data leakage.
+
+  ISPRAVNO: podeli PO TERETANI (i po sesiji snimanja).
+    train: gym01, gym02, gym03, gym04     (~70%)
+    val:   gym05                          (~15%)
+    test:  gym06                          (~15%)  <- NIKAD ne treniraj na njoj
+
+  Test teretana je tvoj jedini posten pokazatelj kako ce model raditi kod
+  nepoznatog korisnika. Cuvaj je kao svetinju: ne gledaj njene rezultate dok
+  ne zavrsis podesavanje, i ne dodaj njene slike u trening "samo malo".
+
+--------------------------------------------------------------------------------
+5.10 SLIKE SA INTERNETA - DA ILI NE
+--------------------------------------------------------------------------------
+  Mogu, ali NAJVISE 20-30% dataseta i nikad kao jedini izvor.
+  Problem: kataloske slike proizvodjaca su na beloj pozadini, savrseno
+  osvetljene, u studiju. To je opet drugi domen od telefona u teretani.
+  Model naklonjen kataloskim slikama pada u stvarnoj upotrebi.
+
+  Korisne su za: pokrivanje brendova/modela koje nemas u svojoj okolini
+  (raznolikost primeraka iz 5.1).
+  Izvori: sajtovi proizvodjaca (Technogym, Matrix, Life Fitness, Precor,
+  Cybex, Hammer Strength, Gym80, Panatta), oglasi polovne opreme (KupujemProdajem,
+  eBay, Marktplaats - ovo su ZLATO jer su slikane telefonom u pravim prostorima),
+  Wikimedia Commons.
+  Pravno: za privatni trening modela je siva/dozvoljena zona u vecini
+  jurisdikcija, ali NIKAD ne redistribuiraj skupljene slike i ne stavljaj ih u
+  aplikaciju kao ilustracije. Model (tezine) je izveden rad i to je u redu.
+
+--------------------------------------------------------------------------------
+5.11 CEGA SE CUVATI - LISTA GRESAKA
+--------------------------------------------------------------------------------
+  [ ] Sve slike iz jedne teretane            -> model uci teretanu, ne spravu
+  [ ] Svih 300 slika iz istog ugla           -> pada cim korisnik stane sa strane
+  [ ] Samo prazne sprave                     -> pada kad je neko na spravi
+  [ ] Samo dnevno svetlo                     -> pada uvece
+  [ ] Nema `unknown` klase                   -> sve dobija lazno visok skor
+  [ ] Nasumicna podela train/test            -> lazno visoka tacnost
+  [ ] Duplikati (susedni frejmovi)           -> model pamti umesto da uci
+  [ ] Jedna klasa 900 slika, druga 80        -> model ignorise malu klasu
+  [ ] Slike gde je sprava manja od 20% kadra -> sum
+  [ ] Screenshotovi sa vodenim zigom         -> model uci vodeni zig
+
+
+================================================================================
+6. TEHNOLOGIJE I ALATI
+================================================================================
+
+  ZA PRIPREMU PODATAKA (lokalno, na tvom racunaru)
+    Python 3.10.6 (imas ga vec, `python --version`)
+      pip install opencv-python pillow imagehash tqdm numpy
+    Konvencija projekta: skripte u tool/ kao .py, sa .bat pokretacem
+    (isto kao tool/optimize_art.py, tool/prepare_challenge_art.py).
+
+  ZA TRENING (u oblaku, besplatno)
+    Google Colab - besplatan Tesla T4 GPU, ~12h po sesiji
+      https://colab.research.google.com
+    TensorFlow 2.17+ / Keras 3 (vec instalirano u Colabu)
+    Google Drive (15 GB besplatno) za dataset
+    ALTERNATIVA: Kaggle Notebooks - 30h GPU nedeljno, stabilnije od Colaba za
+    duge treninge.
+
+  ARHITEKTURA MODELA (izaberi jednu)
+    MobileNetV3-Small   2.5M param, int8 ~3 MB,  15-25 ms  <- pocni ovde
+    MobileNetV3-Large   5.4M param, int8 ~6 MB,  30-50 ms  <- ako treba tacnost
+    EfficientNet-Lite0  4.7M param, int8 ~5 MB,  30-60 ms  <- najbolji odnos
+    (Sve tri su unapred trenirane na ImageNetu i dolaze uz Keras.)
+
+  ALTERNATIVNI STACK (ako ti je draza CLI umesto pisanja koda)
+    Ultralytics YOLOv8n-cls:
+        pip install ultralytics
+        yolo classify train data=dataset/work model=yolov8n-cls.pt epochs=40 imgsz=224
+        yolo export model=runs/classify/train/weights/best.pt format=tflite int8=True
+    Prednost: 3 komande, sam radi augmentaciju i split.
+    Mana: manje kontrole, AGPL licenca (bitno ako aplikaciju komercijalizujes -
+    AGPL se odnosi na Ultralytics kod, ne nuzno na tezine, ali proveri pre
+    objave; TensorFlow put je Apache 2.0 i bez ovog pitanja).
+
+  ZA BRZI PROTOTIP BEZ KODA (1 sat)
+    Teachable Machine (teachablemachine.withgoogle.com) - prevuces foldere,
+    izvezes .tflite. Idealno da za jedno vece proveris da li ideja uopste radi
+    sa 5 sprava. Nije za produkciju.
+
+  ZA INFERENCE U APLIKACIJI
+    Android: com.google.ai.edge.litert (bivsi TensorFlow Lite)
+    iOS:     TensorFlowLiteSwift pod
+    OCR:     ML Kit Text Recognition (Android) / Vision framework (iOS)
+    Detalji i AGP 9 zamka: sekcija 11.
+
+
+================================================================================
+7. PRIPREMA PODATAKA - SKRIPTE
+================================================================================
+
+7.1 tool/ai_extract_frames.py - video -> frejmovi, bez duplikata
+--------------------------------------------------------------------------------
+"""
+Izvlaci frejmove iz snimaka sprava i odbacuje skoro identicne.
+
+Ulaz:  dataset/raw_video/<gym>/<klasa>_<sesija>.mp4
+Izlaz: dataset/raw/<klasa>/<gym>_<sesija>_<broj>.jpg  (duza ivica 1024 px)
+"""
+import cv2, imagehash, sys
+from pathlib import Path
+from PIL import Image
+
+FPS_TARGET = 2.0          # koliko frejmova u sekundi uzimamo
+LONG_EDGE = 1024
+HASH_DIST_MIN = 6         # manja razlika = duplikat, preskoci
+BLUR_MIN = 45.0           # Laplacian varijansa; ispod ovoga je previse mutno
+
+def sharpness(bgr):
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    return cv2.Laplacian(gray, cv2.CV_64F).var()
+
+def resize_long_edge(bgr, target):
+    h, w = bgr.shape[:2]
+    if max(h, w) <= target:
+        return bgr
+    s = target / max(h, w)
+    return cv2.resize(bgr, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
+
+def process(video_path: Path, out_root: Path):
+    # ime fajla nosi klasu i sesiju: leg_press_s02.mp4 u folderu gym03
+    gym = video_path.parent.name
+    stem = video_path.stem
+    klasa, _, sesija = stem.rpartition("_")
+    out_dir = out_root / klasa
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    cap = cv2.VideoCapture(str(video_path))
+    src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    step = max(1, int(round(src_fps / FPS_TARGET)))
+
+    kept, seen, idx = 0, [], 0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        idx += 1
+        if idx % step:
+            continue
+        if sharpness(frame) < BLUR_MIN:
+            continue                      # potpuno neupotrebljivo, ne cuvamo
+        frame = resize_long_edge(frame, LONG_EDGE)
+        rgb = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        h = imagehash.phash(rgb)
+        if any(h - prev < HASH_DIST_MIN for prev in seen):
+            continue                      # skoro isti kao neki vec sacuvan
+        seen.append(h)
+        rgb.save(out_dir / f"{gym}_{sesija}_{idx:06d}.jpg", quality=88)
+        kept += 1
+    cap.release()
+    print(f"{video_path.name}: sacuvano {kept}")
+
+if __name__ == "__main__":
+    root = Path(sys.argv[1] if len(sys.argv) > 1 else "dataset")
+    for v in sorted((root / "raw_video").rglob("*.mp4")):
+        process(v, root / "raw")
+
+NAPOMENA O BLUR_MIN: postavljeno je NISKO (45) namerno. Ne izbacujemo blagi
+motion blur - njega hocemo (5.6). Izbacujemo samo potpuno rasplinute frejmove.
+
+7.2 tool/ai_split_dataset.py - podela po teretani, ne nasumicno
+--------------------------------------------------------------------------------
+"""
+Deli dataset/raw na work/train|val|test tako da nijedna teretana ne bude u
+dva skupa. Kopira i skalira na 256 px kratku ivicu radi brzine u Colabu.
+"""
+import shutil, collections
+from pathlib import Path
+from PIL import Image, ImageOps
+
+VAL_GYMS  = {"gym05"}
+TEST_GYMS = {"gym06"}
+SHORT_EDGE = 256
+
+def split_for(gym: str) -> str:
+    if gym in TEST_GYMS: return "test"
+    if gym in VAL_GYMS:  return "val"
+    return "train"
+
+def main(root=Path("dataset")):
+    src, dst = root / "raw", root / "work"
+    if dst.exists():
+        shutil.rmtree(dst)
+    counts = collections.Counter()
+    for img_path in src.rglob("*.jpg"):
+        klasa = img_path.parent.name
+        gym = img_path.name.split("_")[0]
+        part = split_for(gym)
+        out_dir = dst / part / klasa
+        out_dir.mkdir(parents=True, exist_ok=True)
+        im = ImageOps.exif_transpose(Image.open(img_path)).convert("RGB")
+        w, h = im.size
+        s = SHORT_EDGE / min(w, h)
+        if s < 1:
+            im = im.resize((round(w * s), round(h * s)), Image.LANCZOS)
+        im.save(out_dir / img_path.name, quality=90)
+        counts[(part, klasa)] += 1
+    for (part, klasa), n in sorted(counts.items()):
+        print(f"{part:5s} {klasa:28s} {n}")
+
+if __name__ == "__main__":
+    main()
+
+Pokreni, pogledaj ispis, i PROVERI:
+  - nijedna klasa u train nema manje od 150 slika
+  - odnos najvece i najmanje klase je ispod 3:1
+  - svaka klasa postoji i u val i u test skupu
+
+7.3 .bat pokretaci (konvencija projekta)
+--------------------------------------------------------------------------------
+tool/ai_prepare.bat:
+    @echo off
+    python "%~dp0ai_extract_frames.py" "%~dp0..\dataset"
+    python "%~dp0ai_split_dataset.py"
+    pause
+
+
+================================================================================
+8. TRENING MODELA - CEO POSTUPAK
+================================================================================
+
+8.1 Priprema Colaba
+--------------------------------------------------------------------------------
+  1. Zipuj dataset/work u work.zip (~250 MB pri 256 px) i ubaci na Google Drive.
+  2. colab.research.google.com -> New notebook
+  3. Runtime -> Change runtime type -> T4 GPU -> Save
+  4. Prva celija:
+
+from google.colab import drive
+drive.mount('/content/drive')
+!cp "/content/drive/MyDrive/fitnesapp/work.zip" /content/
+!unzip -q /content/work.zip -d /content/data
+!ls /content/data/work/train | head -20
+
+  VAZNO: raspakuj na /content (lokalni disk), NE citaj direktno sa Drive-a.
+  Drive I/O je 5-10x sporiji i trening ce trajati vecno.
+
+8.2 Ucitavanje podataka
+--------------------------------------------------------------------------------
+import tensorflow as tf, keras, numpy as np, json
+from pathlib import Path
+
+IMG = 224
+BATCH = 32
+DATA = Path('/content/data/work')
+
+train_ds = keras.utils.image_dataset_from_directory(
+    DATA/'train', image_size=(IMG, IMG), batch_size=BATCH,
+    label_mode='categorical', shuffle=True, seed=1337)
+val_ds = keras.utils.image_dataset_from_directory(
+    DATA/'val', image_size=(IMG, IMG), batch_size=BATCH,
+    label_mode='categorical', shuffle=False)
+test_ds = keras.utils.image_dataset_from_directory(
+    DATA/'test', image_size=(IMG, IMG), batch_size=BATCH,
+    label_mode='categorical', shuffle=False)
+
+CLASSES = train_ds.class_names
+print(len(CLASSES), CLASSES)
+Path('/content/labels.txt').write_text('\n'.join(CLASSES))
+
+AUTOTUNE = tf.data.AUTOTUNE
+train_ds = train_ds.cache().prefetch(AUTOTUNE)
+val_ds   = val_ds.cache().prefetch(AUTOTUNE)
+test_ds  = test_ds.cache().prefetch(AUTOTUNE)
+
+8.3 Augmentacija - sta DA a sta NE
+--------------------------------------------------------------------------------
+aug = keras.Sequential([
+    keras.layers.RandomFlip('horizontal'),      # DA
+    keras.layers.RandomRotation(0.05),          # +-18 stepeni
+    keras.layers.RandomZoom(0.2, 0.2),
+    keras.layers.RandomTranslation(0.1, 0.1),
+    keras.layers.RandomBrightness(0.25, value_range=(0, 255)),
+    keras.layers.RandomContrast(0.3),
+], name='aug')
+
+  DA:
+    horizontalni flip     - sprava vidjena sa druge strane je i dalje ta sprava
+    rotacija do +-20      - niko ne drzi telefon savrseno ravno
+    zoom / translacija    - razlicita udaljenost i kadriranje
+    svetlina / kontrast   - najvaznija augmentacija za teretane
+    blagi sum + JPEG artefakti
+    random erasing (cutout 1-2 kvadrata do 20% slike) - simulira zaklanjanje
+
+  NE:
+    vertikalni flip       - sprava naopacke ne postoji, samo zbunjuje model
+    rotacija preko 30     - isto
+    jaka hue promena      - boja brenda je korisna informacija, ne brisi je
+                            (blaga, do 0.05, je u redu i pomaze generalizaciji)
+    ekstremni crop koji odseca vise od pola sprave
+
+  NAPOMENA: ako koristis MobileNetV3 sa ugradjenim preprocesiranjem, augmentacija
+  radi na skali 0-255, zato `value_range=(0, 255)` gore.
+
+8.4 Model - transfer learning
+--------------------------------------------------------------------------------
+base = keras.applications.MobileNetV3Small(
+    input_shape=(IMG, IMG, 3),
+    include_top=False,
+    weights='imagenet',
+    include_preprocessing=True,   # ocekuje ULAZ 0-255, ZAPAMTI OVO za Dart!
+    pooling='avg')
+base.trainable = False
+
+inputs = keras.Input((IMG, IMG, 3))
+x = aug(inputs)
+x = base(x, training=False)
+x = keras.layers.Dropout(0.3)(x)
+outputs = keras.layers.Dense(len(CLASSES), activation='softmax')(x)
+model = keras.Model(inputs, outputs)
+
+8.5 Dve faze treninga
+--------------------------------------------------------------------------------
+# --- class weights: mala klasa ne sme da bude ignorisana -------------------
+import collections
+counts = collections.Counter()
+for p in (DATA/'train').iterdir():
+    counts[CLASSES.index(p.name)] = len(list(p.glob('*.jpg')))
+total = sum(counts.values())
+class_weight = {i: total / (len(CLASSES) * n) for i, n in counts.items()}
+
+cbs = [
+    keras.callbacks.EarlyStopping(monitor='val_accuracy', patience=6,
+                                  restore_best_weights=True),
+    keras.callbacks.ModelCheckpoint('/content/best.keras',
+                                    monitor='val_accuracy', save_best_only=True),
+    keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.4, patience=3),
+]
+
+# FAZA 1: samo glava, backbone zamrznut. Brzo, stabilizuje pocetak.
+model.compile(optimizer=keras.optimizers.AdamW(1e-3),
+              loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
+              metrics=['accuracy',
+                       keras.metrics.TopKCategoricalAccuracy(3, name='top3')])
+model.fit(train_ds, validation_data=val_ds, epochs=12,
+          class_weight=class_weight, callbacks=cbs)
+
+# FAZA 2: fine-tuning. Otvaramo poslednju trecinu backbone-a, MALI learning rate.
+base.trainable = True
+for layer in base.layers[:-40]:
+    layer.trainable = False
+for layer in base.layers:                       # BatchNorm ostaje zamrznut
+    if isinstance(layer, keras.layers.BatchNormalization):
+        layer.trainable = False
+
+model.compile(optimizer=keras.optimizers.AdamW(1e-4),
+              loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
+              metrics=['accuracy',
+                       keras.metrics.TopKCategoricalAccuracy(3, name='top3')])
+model.fit(train_ds, validation_data=val_ds, epochs=30,
+          class_weight=class_weight, callbacks=cbs)
+
+  OCEKIVANO TRAJANJE na T4, 4.500 slika, 12 klasa:
+    Faza 1: ~4 minuta.  Faza 2: ~12-18 minuta.  Ukupno ispod pola sata.
+  Ako ti trening traje sat i po, skoro sigurno citas podatke sa Drive-a (8.1).
+
+  ZASTO label_smoothing=0.1: sprecava da model bude preterano siguran, sto ti
+  je bitno jer se oslanjas na prag pouzdanosti u sekciji 5.7.
+  ZASTO BatchNorm ostaje zamrznut: sa malim batchem i malim datasetom
+  odmrznuti BN statistike unistavaju prethodno naucene tezine.
+
+8.6 KRITICNA STVAR: NORMALIZACIJA MORA BITI ISTA U COLABU I U DARTU
+--------------------------------------------------------------------------------
+  Broj 1 razlog zasto model "radi u Colabu a u aplikaciji daje nasumicne
+  rezultate" je razlicito preprocesiranje.
+
+  Sa `include_preprocessing=True` (kako je gore), model OCEKUJE piksele 0-255 i
+  sam radi skaliranje unutra. Znaci u Dartu ne delis sa 255!
+  Sa `include_preprocessing=False` moras u Dartu sam da radis (x/127.5 - 1).
+
+  ZAPISI izabranu varijantu u fajl koji ide uz model:
+    {"input": "uint8_0_255", "size": 224, "layout": "NHWC", "rgb": true}
+  i procitaj ga u Dartu. Nemoj se oslanjati na pamcenje - vratices se ovome za
+  4 meseca.
+
+
+================================================================================
+9. EVALUACIJA - STA ZNACI "DOVOLJNO DOBRO"
+================================================================================
+
+9.1 Metrike koje merimo (na TEST teretani koju model nije video)
+--------------------------------------------------------------------------------
+import numpy as np
+from sklearn.metrics import classification_report, confusion_matrix
+
+y_true = np.concatenate([y.numpy().argmax(1) for _, y in test_ds])
+y_prob = model.predict(test_ds)
+y_pred = y_prob.argmax(1)
+
+print(classification_report(y_true, y_pred, target_names=CLASSES, digits=3))
+print(confusion_matrix(y_true, y_pred))
+
+top3 = np.mean([t in np.argsort(p)[-3:] for t, p in zip(y_true, y_prob)])
+print('top-3:', round(top3, 4))
+
+9.2 Ciljevi (na NEPOZNATOJ teretani, ne na val skupu)
+--------------------------------------------------------------------------------
+  top-1 tacnost         >= 85%   (ispod 75% ne pustaj u produkciju)
+  top-3 tacnost         >= 95%   (ovo je ono sto korisnik zapravo oseti,
+                                  jer prikazujes tri predloga)
+  recall po klasi       >= 75%   za SVAKU klasu. Jedna klasa na 40% kvari
+                                 utisak celog feature-a.
+  unknown -> sprava     <= 10%   (koliko cesto model tvrdi da je zid Leg Press)
+  vreme inference       <= 80 ms na osrednjem Androidu
+
+9.3 Kako citas confusion matricu
+--------------------------------------------------------------------------------
+  Gledas redove: red = prava klasa, kolona = sta je model rekao.
+  Ako u redu leg_extension ima 30 pogodaka a 18 ih je otislo u leg_curl:
+    -> nemas dovoljno bocnih slika te dve sprave. Idi i snimi jos 100 iz
+       profila, u obe teretane. To je resenje, a NE menjanje arhitekture.
+
+  PRAVILO: kad je tacnost losa, 90% vremena je resenje "vise/bolji podaci", a
+  ne "veci model" ili "vise epoha". Veci model na losem datasetu samo brze
+  nauci greske.
+
+9.4 Test na terenu (obavezno pre pustanja)
+--------------------------------------------------------------------------------
+  Odi u teretanu koja NIJE u datasetu, sa buildom aplikacije, i uslikaj svaku
+  spravu po 5 puta na nacin kako bi to uradio obican korisnik (brzo, iz ruke,
+  bez razmisljanja o uglu). Zabelezi rezultat u tabelu.
+  Ako od 60 pokusaja imas manje od 50 tacnih -> nazad na dataset.
+
+
+================================================================================
+10. KVANTIZACIJA, VELICINA MODELA, BRZINA
+================================================================================
+
+10.1 Export iz Colaba
+--------------------------------------------------------------------------------
+# Keras 3 -> SavedModel -> TFLite (najpouzdaniji put)
+model.export('/content/saved_model')
+
+def rep_data():
+    # 200-300 STVARNIH slika iz trening skupa, bez augmentacije
+    ds = keras.utils.image_dataset_from_directory(
+        DATA/'train', image_size=(IMG, IMG), batch_size=1,
+        label_mode=None, shuffle=True)
+    for i, batch in enumerate(ds):
+        if i >= 250: break
+        yield [tf.cast(batch, tf.float32)]
+
+conv = tf.lite.TFLiteConverter.from_saved_model('/content/saved_model')
+conv.optimizations = [tf.lite.Optimize.DEFAULT]
+conv.representative_dataset = rep_data
+conv.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+conv.inference_input_type = tf.uint8      # Dart salje bajtove 0-255
+conv.inference_output_type = tf.uint8
+open('/content/equipment_int8.tflite', 'wb').write(conv.convert())
+
+# i float16 verzija za poredjenje tacnosti
+conv2 = tf.lite.TFLiteConverter.from_saved_model('/content/saved_model')
+conv2.optimizations = [tf.lite.Optimize.DEFAULT]
+conv2.target_spec.supported_types = [tf.float16]
+open('/content/equipment_fp16.tflite', 'wb').write(conv2.convert())
+
+  OBAVEZNO: izmeri tacnost .tflite modela, ne samo Keras modela. Int8
+  kvantizacija tipicno kosta 0.5-2% tacnosti; ako izgubis vise od 3%, znaci da
+  ti je representative_dataset bio los (premali ili nereprezentativan).
+
+10.2 Tabela izbora
+--------------------------------------------------------------------------------
+  FORMAT   MobileNetV3-Small   Brzina (srednji Android)   Gubitak tacnosti
+  float32        ~10 MB              60-90 ms                  0%
+  float16         ~5 MB              45-70 ms                 ~0.2%
+  int8            ~3 MB              15-25 ms                 0.5-2%     <- ovo
+
+10.3 Gde model zivi
+--------------------------------------------------------------------------------
+  OPCIJA A: u bundle-u (assets/ml/equipment_int8.tflite + labels.txt)
+    +3 MB na APK. Radi odmah, offline, nula troska.
+    PREPORUKA za v1.
+
+  OPCIJA B: preuzimanje sa Supabase Storage pri prvom otvaranju feature-a
+    APK ostaje mali, model se azurira bez update-a aplikacije.
+    TROSAK: 3 MB po korisniku, jednom (kesirano zauvek, isti obrazac kao
+    ExerciseMediaCache i version-addressed putanje koje vec koristis:
+    ml-models/equipment/{verzija}.tflite).
+    Racunica: 10.000 korisnika x 3 MB = 30 GB egress jednokratno. To vec nije
+    zanemarljivo na Supabase planovima - proveri kvotu pre nego sto se odlucis.
+    PREPORUKA: A za v1, B tek kad model pocnes cesto da azurirac.
+
+
+================================================================================
+11. INTEGRACIJA U FLUTTER APLIKACIJU
+================================================================================
+
+11.1 UPOZORENJE: AGP 9 ZAMKA (specificno za ovaj projekat)
+--------------------------------------------------------------------------------
+  fitness_plus koristi Android Gradle Plugin 9.1.0 (android/settings.gradle.kts).
+  Svaki Flutter paket ciji android/build.gradle jos radi
+  `apply plugin: 'kotlin-android'` PUCA pri konfiguraciji, sa obmanjujucom
+  porukom o compileSdk. To se ne moze zakrpiti iz root build.gradle.kts.
+  Zbog toga flutter_tts ovde nije upotrebljiv i TTS je uradjen kao sopstveni
+  method channel (RunVoiceChannel.kt / RunVoiceChannel.swift).
+
+  ISTA ZAMKA VREBA I OVDE. Pre nego sto uopste napises Dart kod:
+
+    flutter pub add tflite_flutter
+    flutter build apk --debug        # <- JEDINI pravi test
+    grep -r "kotlin-android" %LOCALAPPDATA%\Pub\Cache\hosted\pub.dev\tflite_flutter-*\android\
+
+  `flutter analyze` i `flutter test` NECE uhvatiti ovaj problem jer ne
+  konfigurisu Gradle.
+
+  PREPORUCEN PUT (izbegava rizik u startu i prati postojeci obrazac projekta):
+  NE koristi Flutter plugin uopste. Dodaj TFLite kao APLIKACIJSKU zavisnost i
+  napisi sopstveni method channel - projekat vec ima cetiri takva kanala pa je
+  peti trivijalan.
+
+    android/app/build.gradle.kts:
+      dependencies {
+          implementation("com.google.ai.edge.litert:litert:1.4.0")
+          implementation("com.google.ai.edge.litert:litert-gpu:1.4.0")   // opciono
+          implementation("com.google.mlkit:text-recognition:16.0.1")     // OCR
+      }
+
+    ios/Podfile:
+      pod 'TensorFlowLiteSwift', '~> 2.17'
+      # OCR na iOS-u je ugradjen Vision framework, bez poda
+
+  Prednost: nema tudjeg Gradle skripta koji moze da pukne, kontrolises verzije,
+  i OCR dobijas prakticno besplatno jer je ML Kit ionako aplikacijska
+  zavisnost (ne treba ti google_mlkit_* Flutter plugin koji JESTE kotlin-android
+  i skoro sigurno bi pukao).
+
+11.2 Struktura koda (prati postojecu feature-first organizaciju)
+--------------------------------------------------------------------------------
+  lib/features/equipment_scan/
+    domain/
+      equipment_class.dart          # enum/ref_id + display name
+      equipment_prediction.dart     # {refId, confidence, alternatives}
+      equipment_recognizer.dart     # apstraktni interfejs
+      equipment_catalog_gateway.dart# sprava -> vezbe
+    data/
+      method_channel_equipment_recognizer.dart   # poziva native kanal
+      supabase_equipment_catalog_gateway.dart
+      bundled_equipment_labels.dart
+    application/
+      equipment_scan_controller.dart
+    presentation/
+      equipment_scan_screen.dart    # kamera/galerija + rezultat
+      equipment_result_sheet.dart   # top-1 veliko + 2 chipa + "izaberi rucno"
+      equipment_exercises_list.dart
+
+  android/app/src/main/kotlin/com/example/fitness_plus/
+      EquipmentScanChannel.kt       # ucitava .tflite, radi inference + OCR
+  ios/Runner/
+      EquipmentScanChannel.swift
+
+  assets/ml/
+      equipment_int8.tflite
+      labels.txt
+      preprocess.json               # iz 8.6
+
+  U pubspec.yaml dodaj `- assets/ml/` (podfolderi trebaju svoj unos, kao sto je
+  vec komentarisano za achievements).
+
+11.3 Skica Dart strane
+--------------------------------------------------------------------------------
+// lib/features/equipment_scan/data/method_channel_equipment_recognizer.dart
+class MethodChannelEquipmentRecognizer implements EquipmentRecognizer {
+  static const _channel = MethodChannel('fitness_plus/equipment_scan');
+
+  @override
+  Future<List<EquipmentPrediction>> recognize(String imagePath) async {
+    final raw = await _channel.invokeMethod<List<dynamic>>('classify', {
+      'path': imagePath,
+      'topK': 3,
+      'useOcr': true,
+    });
+    return (raw ?? const [])
+        .cast<Map>()
+        .map(EquipmentPrediction.fromMap)
+        .toList(growable: false);
+  }
+}
+
+  Native strana radi: dekodiranje -> EXIF rotacija -> centralni kvadratni crop
+  -> resize 224 -> uint8 buffer -> interpreter -> softmax -> (opciono) OCR
+  bonus -> vraca top 3.
+  Slika se NE salje kroz kanal kao bajtovi (skupo kopiranje), nego kao putanja.
+
+11.4 Zasto slikanje ide preko image_picker u v1
+--------------------------------------------------------------------------------
+  image_picker 1.2.3 je vec u projektu i radi. Za v1 je dovoljno: korisnik
+  pritisne "Skeniraj spravu", otvori se kamera, uslika, dobije rezultat.
+  Live preview (klasifikacija svakog frejma dok drzi telefon uperen) je lepsi
+  ali trazi `camera` paket -> novi Gradle rizik + vise koda + trosi bateriju.
+  Ostavi za v2 kad model bude dokazan.
+
+11.5 UX detalji koji odlucuju da li ce se feature koristiti
+--------------------------------------------------------------------------------
+  - Prikazi rezultat za manje od sekunde. Ako mora spinner, neka bude kratak.
+  - NIKAD prazan ekran: ako je pouzdanost niska, prikazi top 3 + pretragu.
+  - Uvek dostupno "Izaberi spravu rucno" - ovo je i fallback i izvor labela.
+  - Posle prikaza vezbi, malo dugme "Nije ovo tacno" -> otvara listu -> to je
+    tvoj besplatni izvor podataka za sledeci trening (vidi 13).
+  - Prvi put objasni sta feature radi i savetuj "stani 2-3 koraka od sprave,
+    uhvati je celu u kadar". Jedna recenica podigne tacnost vise nego nedelja
+    optimizacije modela.
+
+
+================================================================================
+12. MAPIRANJE SPRAVA NA VEZBE U BAZI
+================================================================================
+
+  Trenutni model podataka (`exercises.equipment` kao grub niz) ne moze ovo da
+  izrazi. Treba mala nova struktura. Postuj postojece konvencije koje sam video
+  u migracijama: javni katalog je citljiv svima preko RLS, funkcije su security
+  invoker, i novim funkcijama se EKSPLICITNO oduzima EXECUTE od anon jer default
+  privilegija u ovoj bazi to sama dodeli.
+
+  -- supabase/migrations/2026XXXX_gym_machines.sql
+
+  create table if not exists public.gym_machines (
+    id           bigint generated always as identity primary key,
+    ref_id       text not null unique,     -- 'lat_pulldown' = ime klase modela
+    display_name text not null,
+    description  text,
+    created_at   timestamptz not null default now()
+  );
+
+  create table if not exists public.gym_machine_exercises (
+    machine_ref_id  text not null references public.gym_machines(ref_id)
+                      on delete cascade,
+    exercise_ref_id text not null references public.exercises(ref_id)
+                      on delete cascade,
+    sort_order      smallint not null default 100,
+    primary key (machine_ref_id, exercise_ref_id)
+  );
+
+  alter table public.gym_machines enable row level security;
+  alter table public.gym_machine_exercises enable row level security;
+
+  -- Referentni sadrzaj, isto kao exercises: svi citaju, pise se samo iz
+  -- dashboarda / service role koji zaobilazi RLS.
+  create policy gym_machines_public_read on public.gym_machines
+    for select to anon, authenticated using (true);
+  create policy gym_machine_exercises_public_read on public.gym_machine_exercises
+    for select to anon, authenticated using (true);
+
+  -- Jedan zahtev po skenu: vraca samo kolone koje lista prikazuje.
+  create or replace function public.exercises_for_machine(p_machine_ref_id text)
+  returns table (
+    ref_id text, display_name text, thumbnail_version smallint,
+    preview_version smallint
+  )
+  language sql stable security invoker
+  as $$
+    select e.ref_id, e.display_name, e.thumbnail_version, e.preview_version
+    from public.gym_machine_exercises m
+    join public.exercises e on e.ref_id = m.exercise_ref_id
+    where m.machine_ref_id = p_machine_ref_id
+    order by m.sort_order, e.display_name
+  $$;
+
+  revoke execute on function public.exercises_for_machine(text) from anon;
+  grant  execute on function public.exercises_for_machine(text) to authenticated;
+
+  NAPOMENA: klase modela i gym_machines.ref_id MORAJU biti isti stringovi.
+  Napisi test koji uporedjuje assets/ml/labels.txt sa spiskom iz baze - inace
+  ces jednog dana preimenovati klasu i dobiti prazan ekran u produkciji.
+
+
+================================================================================
+13. PETLJA POBOLJSANJA (ACTIVE LEARNING) I NJEN TROSAK
+================================================================================
+
+  Najjeftiniji izvor novih podataka su tvoji korisnici - ali samo ako to uradis
+  pazljivo, jer se ovde lako napravi trosak koji raste sa brojem korisnika.
+
+  STA SE SALJE: samo kad korisnik EKSPLICITNO pritisne "Nije tacno, ovo je X".
+  Nikad automatski, nikad u pozadini, nikad svaka slika.
+
+  KAKO SE SALJE JEFTINO:
+    - skaliraj na 384 px duzu ivicu, WebP kvalitet 75  -> 25-40 KB
+    - bez EXIF-a (skida lokaciju!)
+    - bucket sa RLS: korisnik moze samo INSERT u svoj prefiks, ne moze citati
+    - limit: najvise 10 slika po korisniku mesecno (proveri u bazi pre uploada)
+    - obrisi objekat cim ga prebacis u dataset (retencija 90 dana)
+
+  RACUNICA (bitno zbog ogranicenja cene po korisniku):
+    10.000 aktivnih korisnika, 2% ih ikad posalje ispravku, prosek 3 slike:
+    200 x 3 x 35 KB = ~21 MB mesecno. Zanemarljivo.
+    Ali BEZ limita, ako neko napravi skriptu ili se feature "zaglavi" u petlji,
+    isti broj korisnika moze da nagura desetine GB. Limit nije opcion.
+
+  RITAM: skupljaj 2-3 meseca -> pregledaj rucno (ljudi lazu i greske u labelama
+  su otrov) -> dodaj u dataset -> retrening (30 min) -> nova verzija modela.
+
+  BONUS: broj ispravki po klasi ti tacno kaze koja klasa je najslabija. To je
+  najbolji moguci prioritet za sledecu turu snimanja.
+
+
+================================================================================
+14. VREMENSKI PLAN
+================================================================================
+
+  NEDELJA 1  - Priprema (bez AI-ja)
+    [ ] Zakljucaj spisak od 12 klasa
+    [ ] Dopuni katalog: 3-5 vezbi po klasi, sa instruction tekstom
+    [ ] Napisi migraciju iz sekcije 12 i popuni mapiranje
+    [ ] Snimi prvu teretanu po uputstvu iz 5.3
+    Rezultat: baza spremna, ~600 slika
+
+  NEDELJA 2  - Prikupljanje
+    [ ] Jos 4-5 teretana (svoje + preko prijatelja)
+    [ ] Napisi tool/ai_extract_frames.py i ai_split_dataset.py
+    [ ] Skupi unknown klasu (600-1000 slika)
+    Rezultat: ~4.500 slika, podeljeno po teretanama
+
+  NEDELJA 3  - Prvi model
+    [ ] Colab notebook, trening faza 1 + 2
+    [ ] Evaluacija na test teretani, confusion matrica
+    [ ] Identifikuj 2-3 najslabije klase
+    Rezultat: model sa realnih 75-85% top-1
+
+  NEDELJA 4  - Dopuna i drugi trening
+    [ ] Ciljano snimi jos 100-150 slika po slaboj klasi (uglovi iz 4. sekcije)
+    [ ] Retrening, kvantizacija u int8, provera da tacnost nije pala
+    Rezultat: equipment_int8.tflite, ~3 MB, 85-90%
+
+  NEDELJA 5-6 - Integracija
+    [ ] EquipmentScanChannel.kt + .swift
+    [ ] flutter build apk --debug RANO, dok je jos malo koda
+    [ ] Dart sloj, ekran, mapiranje na vezbe
+    [ ] OCR sloj (ML Kit / Vision) i kombinovanje skorova
+    Rezultat: feature radi u aplikaciji
+
+  NEDELJA 7  - Terenski test i doterivanje
+    [ ] Test u teretani van dataseta, 5 pokusaja po spravi
+    [ ] Podesi prag pouzdanosti na osnovu izmerenog
+    [ ] Fallback ekran, tekst pomoci, "nije tacno" dugme
+    Rezultat: spremno za korisnike
+
+  UKUPNO: ~7 nedelja uz normalan tempo, 40-70 sati rada.
+  Od toga je 20-25 sati fotografisanje - to je posao koji se ne moze skratiti
+  kodom i najbolje je da ga radis u blokovima (jedna teretana = jedno popodne).
+
+
+================================================================================
+15. RIZICI I KAKO IH RESAVAS
+================================================================================
+
+  RIZIK                          VEROVATNOCA   RESENJE
+  ---------------------------------------------------------------------------
+  AGP 9 obara tflite_flutter        visoka      Sopstveni method channel (11.1).
+                                                Testiraj `flutter build apk`
+                                                PRVOG dana integracije.
+  Model pada u novoj teretani       visoka      Vise teretana u datasetu. Ovo je
+                                                jedini lek, nema softverskog.
+  Leg extension/curl zabuna         visoka      Vise bocnih uglova + OCR plocice
+  Katalog nema vezbe za spravu      sigurna     Sekcija 2 - radi to prvo
+  Model prepoznaje zid kao spravu   sigurna     unknown klasa + prag (5.7)
+  APK poraste previse                niska      int8, 3 MB je prihvatljivo
+  iOS se ponasa drugacije          srednja      Isti .tflite fajl, ali proveri
+                                                orijentaciju slike - iOS EXIF
+                                                rotacija je cest izvor bagova
+  Privatnost (ljudi u kadru)       srednja      Ne cuvaj lica; upload samo uz
+                                                pristanak; skini EXIF; obrisi
+                                                posle obrade
+  Trosis nedelje na model umesto     visoka     Postavi rok: ako posle 2 pokusaja
+  na podatke                                    treninga nemas 80%, problem je
+                                                dataset, ne hiperparametri
+
+
+================================================================================
+16. BRZA MVP VARIJANTA (rezultat za 3 dana)
+================================================================================
+  Ako hoces da pre svega ovoga proveris da li se ideja uopste isplati:
+
+  Dan 1: Snimi 5 sprava u 2 teretane (lat pulldown, leg press, leg extension,
+         chest press, treadmill) + unknown. Po 100 slika.
+  Dan 2: teachablemachine.withgoogle.com -> Image Project -> prevuci foldere ->
+         Train -> Export -> TensorFlow Lite -> Quantized. Dobijes .tflite i
+         labels.txt bez ijedne linije koda.
+  Dan 3: Zakuvaj model u aplikaciju, hardkoduj mapiranje 5 sprava na vezbe,
+         probaj u trecoj teretani.
+
+  Ako ti to da 70%+ na 5 sprava iz dve teretane, ceo plan iz ovog dokumenta ce
+  da radi. Ako da 45%, problem je u nacinu snimanja i bolje da to saznas sad
+  nego posle mesec dana.
+
+
+================================================================================
+17. CHECKLIST ZA PRVIH 7 DANA
+================================================================================
+  [ ] 1. Zapisi tacan spisak klasa v1 (12 komada) u fajl labels.txt
+  [ ] 2. Za svaku klasu proveri ima li 3+ vezbe u public.exercises;
+         gde nema - napisi ih
+  [ ] 3. Instaliraj: pip install opencv-python pillow imagehash tqdm numpy
+  [ ] 4. Napravi dataset/raw_video/gym01/
+  [ ] 5. Otidji u svoju teretanu, pitaj za dozvolu, snimi 12 videa po 45 s
+         (po uputstvu 5.3 i uglovima 5.4)
+  [ ] 6. Napisi tool/ai_extract_frames.py (kod je u 7.1), pokreni, prebroj slike
+  [ ] 7. Pogledaj 50 nasumicnih izvucenih slika - jesu li raznovrsne? ako su sve
+         iste, snimao si prebrzo ili iz jednog ugla
+  [ ] 8. Dogovori 2 prijatelja da snime svoje teretane po istom uputstvu
+  [ ] 9. Otvori prazan Colab i proveri da dobijas T4 GPU
+  [ ] 10. Napravi granu u projektu za feature (git je trenutno neinicijalizovan
+          u ovom folderu - pre ikakvih izmena napravi kopiju u backup/, kao sto
+          je vec praksa u ovom projektu)
+
+================================================================================
+KRAJ
+Sledeci korak kad zavrsis prikupljanje prve teretane: javi i pisem ti
+tool/ai_extract_frames.py i ai_split_dataset.py kao prave fajlove u projektu,
+plus Colab notebook spreman za pokretanje.
+================================================================================

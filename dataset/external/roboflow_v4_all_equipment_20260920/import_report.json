@@ -1,0 +1,458 @@
+{
+  "sources": {
+    "gymbro": {
+      "author": "RizzLabzz",
+      "title": "GymBro",
+      "url": "https://universe.roboflow.com/rizzlabzz/gymbro/dataset/2",
+      "archive": "C:\\Users\\veljk\\Desktop\\GymBro.v2i.coco.zip",
+      "archive_sha256": "f340cc0471446c93d2665ec297923fc96eaadd35eed698ac008c8df0d6384731",
+      "version": 2,
+      "license": "CC BY 4.0"
+    },
+    "fitfuel": {
+      "author": "FitFuel",
+      "title": "All Gym Equipment",
+      "url": "https://universe.roboflow.com/fitfuel/all-gym-equipment/dataset/2",
+      "archive": "C:\\Users\\veljk\\Desktop\\All Gym Equipment.v2i.coco.zip",
+      "archive_sha256": "cfd935217293dbdedeea77dd3b21bbbc1a60448d8bbedb85e30860b9117095af",
+      "version": 2,
+      "license": "CC BY 4.0"
+    },
+    "gymdataset": {
+      "author": "Akash Edwin Samuel",
+      "title": "Gym Dataset",
+      "url": "https://universe.roboflow.com/akash-edwin-samuel/gym-dataset-zfznf",
+      "archive": "C:\\Users\\veljk\\Desktop\\nove_slike_za__model_1\\Gym Dataset.v2-dataset-v2.coco.zip",
+      "archive_sha256": "b23b9e7c2b7746bb790cccf1a0b9aaea1ae298370839bae912eb11d56b1f5003",
+      "version": 2,
+      "license": "CC BY 4.0"
+    },
+    "gymequipment": {
+      "author": "xiaoshis-workspace",
+      "title": "Gym Equipment",
+      "url": "https://universe.roboflow.com/xiaoshis-workspace/gym-equipment-t6kck",
+      "archive": "C:\\Users\\veljk\\Desktop\\nove_slike_za__model_1\\Gym Equipment.v1i.coco.zip",
+      "archive_sha256": "b957271ab2036badcacc30b9a90ce08a7a4586b91eac39358ab6c9d4d071b562",
+      "version": 1,
+      "license": "CC BY 4.0"
+    }
+  },
+  "counters": {
+    "archive_images": 67431,
+    "unmapped_annotations_skipped": 222,
+    "source_groups": 5852,
+    "cross_split_groups": 2899,
+    "skipped_small_or_invalid_boxes": 1611,
+    "stock_agency_name_requires_separate_rights_review": 105,
+    "duplicate_crops": 299,
+    "same_source_in_higher_priority_holdout": 48773,
+    "conflicting_crop_labels": 3,
+    "user_images": 97
+  },
+  "prepared_images": 16677,
+  "labels": [
+    "ab_roller",
+    "abdominal_crunch",
+    "assisted_dip_pullup",
+    "back_extension",
+    "barbell",
+    "biceps_curl",
+    "cable_attachment",
+    "cable_machine",
+    "chest_fly",
+    "chest_press",
+    "close_grip_cable_attachment",
+    "dumbbell",
+    "exercise_ball",
+    "ez_bar_attachment",
+    "hack_squat",
+    "hip_abduction_adduction",
+    "kettlebell",
+    "lat_pulldown",
+    "lateral_raise",
+    "leg_curl",
+    "leg_extension",
+    "leg_press",
+    "mag_grip_attachment",
+    "parallel_bars",
+    "plyometric_box",
+    "pullup_bar",
+    "pushup_equipment",
+    "resistance_bands",
+    "seated_dip",
+    "seated_row",
+    "shoulder_press",
+    "smith_machine",
+    "squat_rack",
+    "stair_climber",
+    "stationary_bike",
+    "straight_bar_attachment",
+    "torso_rotation",
+    "treadmill",
+    "triceps_extension",
+    "vbar_attachment",
+    "weight_bench",
+    "wide_grip_attachment"
+  ],
+  "class_counts_before_exclusions": {
+    "dumbbell": {
+      "test": 339,
+      "validation": 169,
+      "train": 631
+    },
+    "ab_roller": {
+      "test": 17,
+      "validation": 6,
+      "train": 42
+    },
+    "abdominal_crunch": {
+      "test": 32,
+      "validation": 20,
+      "train": 150
+    },
+    "cable_machine": {
+      "test": 74,
+      "validation": 38,
+      "train": 282
+    },
+    "stepmill": {
+      "test": 2,
+      "validation": 2
+    },
+    "elliptical": {
+      "test": 2
+    },
+    "stability_ball": {
+      "test": 3
+    },
+    "abdominal_bench": {
+      "test": 1
+    },
+    "weight_bench": {
+      "test": 121,
+      "validation": 103,
+      "train": 607
+    },
+    "back_extension": {
+      "test": 36,
+      "validation": 22,
+      "train": 168
+    },
+    "barbell": {
+      "test": 146,
+      "validation": 51,
+      "train": 227
+    },
+    "ghd": {
+      "test": 19
+    },
+    "kettlebell": {
+      "test": 88,
+      "validation": 26,
+      "train": 120
+    },
+    "chest_fly": {
+      "test": 39,
+      "validation": 72,
+      "train": 589
+    },
+    "leg_extension": {
+      "test": 108,
+      "validation": 76,
+      "train": 305
+    },
+    "squat_rack": {
+      "test": 23,
+      "validation": 30,
+      "train": 228
+    },
+    "assisted_dip_pullup": {
+      "test": 43,
+      "validation": 57,
+      "train": 462
+    },
+    "chest_press": {
+      "test": 283,
+      "validation": 168,
+      "train": 920
+    },
+    "smith_machine": {
+      "test": 128,
+      "validation": 42,
+      "train": 330
+    },
+    "leg_curl": {
+      "test": 150,
+      "validation": 72,
+      "train": 408
+    },
+    "triceps_extension": {
+      "test": 16,
+      "validation": 27,
+      "train": 222
+    },
+    "leg_press": {
+      "test": 181,
+      "validation": 104,
+      "train": 730
+    },
+    "hip_abduction_adduction": {
+      "test": 32,
+      "validation": 44,
+      "train": 333
+    },
+    "lat_pulldown": {
+      "test": 169,
+      "validation": 126,
+      "train": 639
+    },
+    "seated_row": {
+      "test": 140,
+      "validation": 166,
+      "train": 586
+    },
+    "biceps_curl": {
+      "test": 144,
+      "validation": 81,
+      "train": 471
+    },
+    "shoulder_press": {
+      "test": 117,
+      "validation": 70,
+      "train": 424
+    },
+    "torso_rotation": {
+      "test": 13,
+      "validation": 40,
+      "train": 303
+    },
+    "lateral_raise": {
+      "test": 87,
+      "validation": 29,
+      "train": 41
+    },
+    "leg_raise_tower": {
+      "test": 147,
+      "validation": 24
+    },
+    "seated_dip": {
+      "test": 119,
+      "validation": 37,
+      "train": 122
+    },
+    "exercise_ball": {
+      "test": 92,
+      "validation": 49,
+      "train": 258
+    },
+    "pullup_bar": {
+      "test": 9,
+      "validation": 25,
+      "train": 206
+    },
+    "punching_bag": {
+      "test": 29,
+      "train": 4
+    },
+    "parallel_bars": {
+      "test": 30,
+      "validation": 17,
+      "train": 221
+    },
+    "hack_squat": {
+      "test": 66,
+      "validation": 52,
+      "train": 298
+    },
+    "wide_grip_attachment": {
+      "test": 6,
+      "validation": 11,
+      "train": 62
+    },
+    "pushup_equipment": {
+      "test": 3,
+      "validation": 4,
+      "train": 18
+    },
+    "resistance_bands": {
+      "test": 22,
+      "validation": 29,
+      "train": 344
+    },
+    "straight_bar_attachment": {
+      "test": 1,
+      "validation": 4,
+      "train": 24
+    },
+    "ez_bar_attachment": {
+      "test": 3,
+      "validation": 2,
+      "train": 16
+    },
+    "mag_grip_attachment": {
+      "test": 2,
+      "validation": 4,
+      "train": 24
+    },
+    "cable_attachment": {
+      "test": 2,
+      "validation": 3,
+      "train": 66
+    },
+    "vbar_attachment": {
+      "test": 1,
+      "validation": 5,
+      "train": 18
+    },
+    "glute_drive": {
+      "test": 1,
+      "validation": 1,
+      "train": 6
+    },
+    "stair_climber": {
+      "test": 21,
+      "validation": 2,
+      "train": 12
+    },
+    "treadmill": {
+      "test": 147,
+      "validation": 95,
+      "train": 199
+    },
+    "foam_roller": {
+      "test": 3,
+      "train": 5
+    },
+    "plyometric_box": {
+      "test": 3,
+      "validation": 4,
+      "train": 36
+    },
+    "weight_plate": {
+      "test": 1,
+      "validation": 1,
+      "train": 18
+    },
+    "stationary_bike": {
+      "test": 39,
+      "validation": 11,
+      "train": 122
+    },
+    "multi_station_gym": {
+      "validation": 1,
+      "train": 11
+    },
+    "cable_row_attachment": {
+      "validation": 5,
+      "train": 8
+    },
+    "cable_triceps_attachment": {
+      "validation": 1
+    },
+    "close_grip_cable_attachment": {
+      "validation": 2,
+      "train": 18
+    },
+    "rope_attachment": {
+      "validation": 1
+    },
+    "roman_chair": {
+      "train": 6
+    },
+    "sliders": {
+      "train": 6
+    }
+  },
+  "insufficient_classes_excluded": [
+    {
+      "label": "abdominal_bench",
+      "ntrain": 0,
+      "nval": 0
+    },
+    {
+      "label": "cable_row_attachment",
+      "ntrain": 8,
+      "nval": 5
+    },
+    {
+      "label": "cable_triceps_attachment",
+      "ntrain": 0,
+      "nval": 1
+    },
+    {
+      "label": "elliptical",
+      "ntrain": 0,
+      "nval": 0
+    },
+    {
+      "label": "foam_roller",
+      "ntrain": 5,
+      "nval": 0
+    },
+    {
+      "label": "ghd",
+      "ntrain": 0,
+      "nval": 0
+    },
+    {
+      "label": "glute_drive",
+      "ntrain": 6,
+      "nval": 1
+    },
+    {
+      "label": "leg_raise_tower",
+      "ntrain": 0,
+      "nval": 24
+    },
+    {
+      "label": "multi_station_gym",
+      "ntrain": 11,
+      "nval": 1
+    },
+    {
+      "label": "punching_bag",
+      "ntrain": 4,
+      "nval": 0
+    },
+    {
+      "label": "roman_chair",
+      "ntrain": 6,
+      "nval": 0
+    },
+    {
+      "label": "rope_attachment",
+      "ntrain": 0,
+      "nval": 1
+    },
+    {
+      "label": "sliders",
+      "ntrain": 6,
+      "nval": 0
+    },
+    {
+      "label": "stability_ball",
+      "ntrain": 0,
+      "nval": 0
+    },
+    {
+      "label": "stepmill",
+      "ntrain": 0,
+      "nval": 2
+    },
+    {
+      "label": "weight_plate",
+      "ntrain": 18,
+      "nval": 1
+    }
+  ],
+  "training_images": 11279,
+  "validation_images": 1995,
+  "test_images": 3092,
+  "limitations": [
+    "Published CC BY 4.0 is not a guarantee of upstream rights to every Internet photograph.",
+    "Filename/pHash grouping is conservative and may merge different images; it cannot detect all near-duplicates.",
+    "Held-out sources are not guaranteed to be independent gyms or machine instances.",
+    "Object crops are not a substitute for live-camera field evaluation.",
+    "No real unknown class has been added. Rejection thresholds remain provisional."
+  ]
+}
